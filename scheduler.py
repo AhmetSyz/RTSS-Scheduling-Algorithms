@@ -1,97 +1,84 @@
-# app.py
-import streamlit as st
-import pandas as pd
-import plotly.express as px
-from scheduler import run_scheduler, Task # Import your logic
+import math
+import copy
+from functools import reduce
 
-st.set_page_config(page_title="RTOS Simulator", layout="wide")
-
-st.title("Real-Time Scheduling Simulator")
-
-# --- SIDEBAR: INPUTS ---
-st.sidebar.header("Configuration")
-algorithm = st.sidebar.selectbox("Select Algorithm", ["Rate Monotonic", "EDF"])
-
-# Simple way to add tasks for now
-st.sidebar.subheader("Add Task")
-name = st.sidebar.text_input("Task Name", "T1")
-cost = st.sidebar.number_input("Computation Cost (Ci)", min_value=1, value=2)
-period = st.sidebar.number_input("Period (Ti)", min_value=1, value=10)
-
-if st.sidebar.button("Add Task"):
-    # We will use Streamlit Session State to store tasks later
-    st.write(f"Task {name} added!")
-
-# --- MAIN AREA: VISUALIZATION ---
-st.subheader("Gantt Chart")
-
-# Run the dummy simulation
-if st.button("Run Simulation"):
-    # 1. Get results from the scheduler
-    results = run_scheduler([], algorithm) 
-    
-    # 2. Convert to DataFrame for Plotly
-    df = pd.DataFrame(results)
-    
-    # 3. Draw the chart
-    fig = px.timeline(
-        df, 
-        x_start="Start", 
-        x_end="Finish", 
-        y="Task", 
-        color="Status",
-        title=f"Schedule using {algorithm}"
-    )
-    
-    # Update layout to show the whole timeline clearly
-    fig.update_yaxes(autorange="reversed") # T1 at top
-    fig.layout.xaxis.type = 'linear' 
-    st.plotly_chart(fig, use_container_width=True)
+class Task:
+    def __init__(self, name, arrival, cost, period, deadline):
+        self.name = name
+        self.arrival = arrival
+        self.cost = cost
+        self.period = period
+        self.deadline = deadline
+        
+        # Simulation state
+        self.remaining_time = 0
+        self.abs_deadline = 0
 
 def _lcm(a, b):
-    """
-    Helper function to calculate LCM of two numbers.
-    Formula: (a * b) // gcd(a, b)
-    """
     return abs(a * b) // math.gcd(a, b)
 
 def calculate_hyperperiod(tasks):
-    """
-    Calculates the Hyperperiod (LCM of all task periods).
-    If no tasks are present, returns a default value (e.g., 10).
-    """
-    if not tasks:
-        return 20 # Default simulation time if list is empty
-
-    # Extract all periods from the task list
+    if not tasks: return 20 
     periods = [task.period for task in tasks]
-    
-    # Calculate LCM over the list of periods
-    # reduce() applies the _lcm function cumulatively to the items
-    hyperperiod = reduce(_lcm, periods)
-    
-    return hyperperiod
+    return reduce(_lcm, periods)
 
 def run_scheduler(tasks, algorithm):
-    """
-    Main engine. 
-    1. Calculates simulation duration (Hyperperiod).
-    2. Runs the simulation loop (To be implemented next).
-    """
+    # 1. Setup Simulation
+    hyperperiod = calculate_hyperperiod(tasks)
     
-    # 1. Determine how long to run
-    simulation_limit = calculate_hyperperiod(tasks)
+    # Create a deep copy so we don't mess up the UI's task list
+    active_tasks = copy.deepcopy(tasks)
     
-    # Debug print to check if logic works (check your terminal when you run it)
-    print(f"Calculated Hyperperiod: {simulation_limit}")
+    # SORTING LOGIC (The Core Difference)
+    if algorithm == "Rate Monotonic":
+        # RM: Sort by Period (Smallest Period first)
+        active_tasks.sort(key=lambda x: x.period)
+    elif algorithm == "EDF":
+        # EDF is dynamic, we sort inside the loop
+        pass 
 
-    # --- TEMP: Return dummy data just to show the timeline length ---
-    # We will delete this part when we write the real loop next.
-    timeline_data = []
+    timeline = []
     
-    # Create a dummy 'Idle' block just to stretch the chart to the limit
-    timeline_data.append(
-        dict(Task="System", Start=0, Finish=simulation_limit, Status="Simulation Scope")
-    )
-    
-    return timeline_data    
+    # 2. The Clock Loop (0 to Hyperperiod)
+    for t in range(hyperperiod):
+        
+        # A. Check for Task Arrivals
+        for task in active_tasks:
+            # If time is a multiple of period, a new instance arrives
+            if t % task.period == 0:
+                # Check if previous instance failed (Deadline Miss)
+                if task.remaining_time > 0:
+                    timeline.append(dict(Task=task.name, Start=t, Finish=t, Status="Missed"))
+                
+                # Reset for new instance
+                task.remaining_time = task.cost
+                task.abs_deadline = t + task.deadline
+
+        # B. Select High Priority Task
+        # Filter tasks that are ready (have work to do)
+        ready_queue = [task for task in active_tasks if task.remaining_time > 0]
+        
+        if algorithm == "EDF":
+            # EDF: Sort ready queue by Absolute Deadline
+            ready_queue.sort(key=lambda x: x.abs_deadline)
+        
+        # C. Execute
+        if ready_queue:
+            current_task = ready_queue[0] # Pick the first one (Highest Priority)
+            
+            # Record execution (1 tick)
+            # Optimization: Try to merge with previous block if same task
+            if timeline and timeline[-1]['Task'] == current_task.name and timeline[-1]['Finish'] == t:
+                timeline[-1]['Finish'] += 1
+            else:
+                timeline.append(dict(Task=current_task.name, Start=t, Finish=t+1, Status="Running"))
+            
+            current_task.remaining_time -= 1
+        else:
+            # CPU is Idle
+            if timeline and timeline[-1]['Task'] == "IDLE" and timeline[-1]['Finish'] == t:
+                timeline[-1]['Finish'] += 1
+            else:
+                timeline.append(dict(Task="IDLE", Start=t, Finish=t+1, Status="Idle"))
+
+    return timeline
