@@ -3,135 +3,193 @@ import pandas as pd
 import plotly.express as px
 from scheduler import run_scheduler, Task
 
-# 1. SETUP PAGE
-st.set_page_config(page_title="RTOS Simulator", layout="wide")
+st.set_page_config(page_title="RTOS Simulator Pro", layout="wide")
 
-# Initialize Session State
-if 'task_list' not in st.session_state:
-    st.session_state.task_list = []
+# Session State Init
+if 'periodic_list' not in st.session_state: st.session_state.periodic_list = []
+if 'aperiodic_list' not in st.session_state: st.session_state.aperiodic_list = []
 
-st.title("⚡ Real-Time Scheduling Simulator")
+st.title("⚡ Advanced RTOS Simulator")
 
-# --- SIDEBAR: INPUTS ---
+# --- SIDEBAR CONFIGURATION ---
 with st.sidebar:
-    st.header("⚙️ Configuration")
-    algorithm = st.selectbox("Scheduling Algorithm", ["Rate Monotonic", "EDF"])
+    st.header("1. System Config")
+    num_cpus = st.slider("Number of Processors", 1, 4, 1)
+    # --- Algorithm Selection ---
+    algorithm = st.selectbox("Algorithm", [
+        "Rate Monotonic", 
+        "Deadline Monotonic", 
+        "EDF", 
+        "Least Laxity First"
+    ])
     
     st.divider()
-    st.subheader("Add Task")
-    col1, col2 = st.columns(2)
-    t_name = col1.text_input("Name", f"T{len(st.session_state.task_list)+1}")
-    t_cost = col2.number_input("Cost (C)", min_value=1, value=1)
-    t_period = col1.number_input("Period (T)", min_value=1, value=4)
-    t_deadline = col2.number_input("Deadline (D)", min_value=1, value=4)
+    st.header("2. Server Config")
+    server_mode = st.selectbox("Aperiodic Handling", ["None", "Background", "Deferrable Server"])
     
-    if st.button("➕ Add Task", use_container_width=True):
-        st.session_state.task_list.append(Task(t_name, 0, t_cost, t_period, t_deadline))
-        st.success(f"Added {t_name}")
+    s_cap = 0
+    s_period = 0
+    if server_mode == "Deferrable Server":
+        col1, col2 = st.columns(2)
+        s_cap = col1.number_input("Server Budget (Cs)", 1, 10, 2)
+        s_period = col2.number_input("Server Period (Ts)", 2, 20, 5)
 
-    # Task List Display
-    if st.session_state.task_list:
-        st.divider()
-        st.write("### Current Tasks")
-        for i, t in enumerate(st.session_state.task_list):
-            st.info(f"**{t.name}**: C={t.cost}, T={t.period}, D={t.deadline}")
+# --- MAIN INPUT AREA (TABS) ---
+tab1, tab2 = st.tabs(["🔄 Periodic Tasks", "⚡ Aperiodic Tasks"])
+
+with tab1:
+    c1, c2, c3, c4, c5 = st.columns(5)
+    p_name = c1.text_input("Task Name", f"T{len(st.session_state.periodic_list)+1}")
+    p_cost = c2.number_input("Exec Time (C)", 1, 20, 1, key="pc")
+    p_period = c3.number_input("Period (T)", 2, 50, 5, key="pp")
+    
+    # Optional Inputs
+    use_custom_r = c4.checkbox("Release Time?", value=False)
+    p_release = c4.number_input("Release (r)", 0, 50, 0, disabled=not use_custom_r, key="pr")
+    
+    use_custom_d = c5.checkbox("Deadline?", value=False)
+    p_deadline = c5.number_input("Deadline (D)", 1, 50, 5, disabled=not use_custom_d, key="pd")
+    
+    if st.button("Add Periodic Task"):
+        # Handle defaults
+        final_deadline = p_deadline if use_custom_d else 0 # 0 tells scheduler to use Period
+        final_release = p_release if use_custom_r else 0
         
-        if st.button("Clear All Tasks", type="primary"):
-            st.session_state.task_list = []
+        # CORRECTED CALL
+        new_task = Task(
+            name=p_name, 
+            task_type="Periodic", 
+            cost=p_cost, 
+            period=p_period, 
+            deadline=final_deadline, 
+            arrival=final_release
+        )
+        st.session_state.periodic_list.append(new_task)
+        st.success(f"Added {p_name}")
+
+    if st.session_state.periodic_list:
+        st.write("---")
+        # Display as a clean table
+        display_data = []
+        for t in st.session_state.periodic_list:
+            display_data.append({
+                "Name": t.name, "Cost": t.cost, "Period": t.period, 
+                "Release": t.arrival_time, "Deadline": t.deadline if t.deadline > 0 else t.period
+            })
+        st.dataframe(display_data)
+        
+        if st.button("Clear Periodic"):
+            st.session_state.periodic_list = []
             st.rerun()
 
-# --- HELPER: UTILIZATION CALC ---
-def calculate_utilization(tasks):
-    u = sum([t.cost / t.period for t in tasks])
-    return u
+with tab2:
+    c1, c2, c3 = st.columns(3)
+    a_name = c1.text_input("Job Name", f"J{len(st.session_state.aperiodic_list)+1}")
+    a_arrival = c2.number_input("Arrival Time (r)", 0, 50, 2)
+    a_cost = c3.number_input("Exec Time (C)", 1, 10, 1, key="ac")
+    
+    if st.button("Add Aperiodic Job"):
+        # CORRECTED CALL
+        new_job = Task(
+            name=a_name, 
+            task_type="Aperiodic", 
+            cost=a_cost, 
+            period=0, 
+            deadline=0, 
+            arrival=a_arrival
+        )
+        st.session_state.aperiodic_list.append(new_job)
+        st.success(f"Added {a_name}")
 
-# --- MAIN PAGE: SIMULATION ---
+    if st.session_state.aperiodic_list:
+        st.write("---")
+        display_data_ap = []
+        for t in st.session_state.aperiodic_list:
+            display_data_ap.append({"Name": t.name, "Arrival": t.arrival_time, "Cost": t.cost})
+        st.dataframe(display_data_ap)
+        
+        if st.button("Clear Aperiodic"):
+            st.session_state.aperiodic_list = []
+            st.rerun()
+
+# --- SIMULATION TRIGGER ---
+st.divider()
+# app.py (Replace the bottom "if st.button..." block)
+
+# app.py (Bottom Section)
+
 if st.button("🚀 RUN SIMULATION", type="primary", use_container_width=True):
-    if not st.session_state.task_list:
-        st.warning("Please add at least one task to the sidebar.")
-    else:
-        # 1. Run Logic
-        tasks = st.session_state.task_list
-        results = run_scheduler(tasks, algorithm)
+    
+    results, queue_log = run_scheduler(
+        st.session_state.periodic_list,
+        st.session_state.aperiodic_list,
+        algorithm,
+        num_cpus,
+        server_mode,
+        s_cap,
+        s_period
+    )
+    
+    if results:
         df = pd.DataFrame(results)
         
-        # 2. ANALYSIS SECTION (The "Is it Schedulable?" part)
+        # --- CHART FIX: Use px.bar instead of px.timeline ---
+        st.subheader("Gantt Chart")
+        
+        # 1. Calculate Duration (Required for px.bar)
+        df['Duration'] = df['Finish'] - df['Start']
+        
+        color_map = {
+            "Running": "#4CAF50",   # Green
+            "Idle": "#EEEEEE",      # Light Grey
+            "Missed": "#FF5252",    # Red
+            "Server Exec": "#2196F3", # Blue
+            "Background": "#9C27B0"   # Purple
+        }
+        
+        # 2. Draw using Horizontal Bar Chart
+        fig = px.bar(
+            df, 
+            x="Duration", 
+            y="CPU",          # Puts the bar on the correct CPU row
+            base="Start",     # Tells Plotly where to start the bar
+            color="Status", 
+            text="Task",      # Show Task Name inside the bar
+            facet_row="CPU",  # Splits the chart into rows (CPU 1, CPU 2)
+            orientation='h',  # Horizontal
+            color_discrete_map=color_map,
+            height=200 * num_cpus if num_cpus > 1 else 300
+        )
+        
+        # 3. Clean up Layout
+        fig.update_layout(
+            xaxis_title="Time (Ticks)",
+            yaxis_title="",
+            showlegend=True,
+            bargap=0.1 # Make bars thicker
+        )
+        
+        # Force X-axis to show every single integer tick
+        fig.update_xaxes(type='linear', dtick=1)
+        
+        # Ensure Y-axes across all facets share the same category order
+        fig.update_yaxes(matches=None, showticklabels=True)
+        
+        st.plotly_chart(fig, use_container_width=True)
+        
+        # --- LOG TABLE ---
         st.divider()
-        st.subheader("📊 Analysis Report")
+        st.subheader("📋 Step-by-Step Queue Log")
         
-        col1, col2, col3 = st.columns(3)
+        queue_df = pd.DataFrame(queue_log)
         
-        # Metric A: CPU Utilization
-        utilization = calculate_utilization(tasks)
-        col1.metric("CPU Utilization (U)", f"{utilization:.2%}")
+        # Reorder columns to ensure Time is first, then CPUs, then Queue
+        cols = ["Time"] + [f"CPU {i+1}" for i in range(num_cpus)] + ["Waiting Queue"]
+        # Filter to make sure we only grab columns that actually exist
+        final_cols = [c for c in cols if c in queue_df.columns]
         
-        # Metric B: Theoretical Check
-        is_schedulable_theory = False
-        n = len(tasks)
-        if algorithm == "Rate Monotonic":
-            # Liu & Layland Bound: n(2^(1/n) - 1)
-            ll_bound = n * (2**(1/n) - 1)
-            col2.metric("RM Bound (Liu & Layland)", f"{ll_bound:.2%}")
-            if utilization <= ll_bound:
-                is_schedulable_theory = True
-                col2.success(" theoretically schedulable")
-            else:
-                col2.warning("Bound exceeded (Simulate to check)")
-        elif algorithm == "EDF":
-            col2.metric("EDF Bound", "100%")
-            if utilization <= 1.0:
-                is_schedulable_theory = True
-                col2.success("Condition Met (U ≤ 1)")
-            else:
-                col2.error("Overloaded (U > 1)")
-
-        # Metric C: Actual Simulation Result
-        missed_deadlines = df[df['Status'] == 'Missed']
-        if not missed_deadlines.empty:
-            col3.error(f"❌ DEADLINE MISSED!")
-            st.error(f"Simulation failed! Task(s) {missed_deadlines['Task'].unique()} missed a deadline.")
-        else:
-            col3.success("✅ SCHEDULE SUCCESSFUL")
-
-        # 3. GANTT CHART (The "Visuals" part)
-        st.subheader("📅 Schedule Timeline")
-        
-        if not df.empty:
-            # Create Chart
-            fig = px.timeline(
-                df, 
-                x_start="Start", 
-                x_end="Finish", 
-                y="Task", 
-                color="Status",
-                # Specific colors: Green for Run, Red for Miss, Grey for Idle
-                color_discrete_map={
-                    "Running": "#4CAF50", 
-                    "Idle": "#D3D3D3", 
-                    "Missed": "#FF5252"
-                },
-                hover_data=["Start", "Finish", "Status"]
-            )
-            
-            # --- CRITICAL FIX FOR X-AXIS ---
-            # This forces the chart to show numbers 0, 1, 2, 3...
-            max_time = df['Finish'].max()
-            fig.update_layout(
-                xaxis=dict(
-                    title="Time (Ticks)",
-                    tickmode='linear', # Force linear steps
-                    dtick=1,           # Step size of 1
-                    range=[0, max_time],
-                    showgrid=True
-                ),
-                yaxis=dict(title="Tasks", autorange="reversed"), # Top task is T1
-                height=300,
-                bargap=0.2
-            )
-            
-            st.plotly_chart(fig, use_container_width=True)
-            
-            # 4. STEP-BY-STEP LOG
-            with st.expander("Show Detailed Execution Log"):
-                st.write("This table shows exactly which task occupied the CPU at each step.")
-                st.dataframe(df, use_container_width=True)
+        st.dataframe(
+            queue_df[final_cols], 
+            use_container_width=True,
+            hide_index=True
+        )
