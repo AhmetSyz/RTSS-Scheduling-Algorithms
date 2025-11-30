@@ -4,13 +4,7 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 
 from scheduler import Task,run_scheduler
-# --- Global list to hold tasks ---
-# 1. Create dummy tasks
-t1 = Task("T1", 0, 1, 4, 4) # Cost 1, Period 4
-t2 = Task("T2", 0, 2, 6, 6) # Cost 2, Period 6
 
-print("--- Starting Simulation (Rate Monotonic) ---")
-results = run_scheduler([t1, t2], "Rate Monotonic")
 tasks = []
 
 def add_task():

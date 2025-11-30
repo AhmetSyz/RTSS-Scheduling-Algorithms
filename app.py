@@ -112,14 +112,11 @@ with tab2:
             st.session_state.aperiodic_list = []
             st.rerun()
 
-# --- SIMULATION TRIGGER ---
+# --- 5. RUN SIMULATION ---
 st.divider()
-# app.py (Replace the bottom "if st.button..." block)
-
-# app.py (Bottom Section)
-
 if st.button("🚀 RUN SIMULATION", type="primary", use_container_width=True):
     
+    # 1. EXECUTE SCHEDULER
     results, queue_log = run_scheduler(
         st.session_state.periodic_list,
         st.session_state.aperiodic_list,
@@ -132,64 +129,123 @@ if st.button("🚀 RUN SIMULATION", type="primary", use_container_width=True):
     
     if results:
         df = pd.DataFrame(results)
-        
-        # --- CHART FIX: Use px.bar instead of px.timeline ---
-        st.subheader("Gantt Chart")
-        
-        # 1. Calculate Duration (Required for px.bar)
         df['Duration'] = df['Finish'] - df['Start']
+        max_time = df["Finish"].max()
         
-        color_map = {
-            "Running": "#4CAF50",   # Green
-            "Idle": "#EEEEEE",      # Light Grey
-            "Missed": "#FF5252",    # Red
-            "Server Exec": "#2196F3", # Blue
-            "Background": "#9C27B0"   # Purple
-        }
+        # --- 2. DATA PREPARATION ---
         
-        # 2. Draw using Horizontal Bar Chart
+        # PART A: THE TOP ROWS (PLANNED ARRIVALS)
+        # We generate this from INPUTS, not results. This ensures J1 appears.
+        planned_data = []
+        
+        # 1. Generate Periodic Arrivals
+        for p_task in st.session_state.periodic_list:
+            t = p_task.arrival_time
+            while t < max_time:
+                planned_data.append({
+                    "Task": p_task.name,
+                    "Start": t,
+                    "Finish": t + p_task.cost, # Visualize the Workload Size
+                    "Duration": p_task.cost,
+                    "Status": "Arrival",       # Mark as Arrival
+                    "Row": p_task.name         # Put on its own row
+                })
+                t += p_task.period
+                
+        # 2. Generate Aperiodic Arrivals (Fixes J1 invisibility)
+        for a_task in st.session_state.aperiodic_list:
+            if a_task.arrival_time <= max_time:
+                planned_data.append({
+                    "Task": a_task.name,
+                    "Start": a_task.arrival_time,
+                    "Finish": a_task.arrival_time + a_task.cost,
+                    "Duration": a_task.cost,
+                    "Status": "Arrival",
+                    "Row": a_task.name
+                })
+        
+        planned_df = pd.DataFrame(planned_data)
+
+        # PART B: THE BOTTOM ROW (ACTUAL CPU EXECUTION)
+        # We keep your existing correct CPU logic
+        cpu_summary_df = df.copy()
+        cpu_summary_df["Row"] = " TOTAL CPU" 
+        # We filter out IDLE for the CPU row to keep it clean, or keep it if you prefer
+        # cpu_summary_df = cpu_summary_df[cpu_summary_df["Task"] != "IDLE"] 
+        
+        # PART C: COMBINE
+        # We might have column mismatches, so we ensure we only concat relevant cols
+        common_cols = ["Task", "Start", "Finish", "Duration", "Row", "Status"]
+        final_df = pd.concat([planned_df[common_cols], cpu_summary_df[common_cols]], ignore_index=True)
+        
+        # --- 3. COLORS ---
+        # Define colors so "T1 Arrival" matches "T1 Execution"
+        unique_tasks = [t for t in final_df["Task"].unique() if t not in ["IDLE", " TOTAL CPU"]]
+        colors = px.colors.qualitative.Plotly
+        color_map = {"IDLE": "#E0E0E0"}
+        
+        for i, task in enumerate(unique_tasks):
+            # Both the task itself and its arrival block get the same color
+            color_map[task] = colors[i % len(colors)]
+        
+        # --- 4. MASTER CHART ---
+        st.subheader("Master Schedule View")
+        
+        # Dynamic Height
+        unique_rows = [r for r in final_df["Row"].unique() if r != " TOTAL CPU"]
+        
         fig = px.bar(
-            df, 
+            final_df, 
             x="Duration", 
-            y="CPU",          # Puts the bar on the correct CPU row
-            base="Start",     # Tells Plotly where to start the bar
-            color="Status", 
-            text="Task",      # Show Task Name inside the bar
-            facet_row="CPU",  # Splits the chart into rows (CPU 1, CPU 2)
-            orientation='h',  # Horizontal
+            y="Row", 
+            base="Start",
+            color="Task", 
+            text="Task", 
+            orientation='h',
             color_discrete_map=color_map,
-            height=200 * num_cpus if num_cpus > 1 else 300
+            height=150 + (50 * len(unique_rows)),
+            # Use distinct opacity to distinguish "Plan" from "Action" if desired, 
+            # but standard solid bars are clearest for "Arrival"
+            opacity=0.9 
         )
         
-        # 3. Clean up Layout
+        # --- 5. LAYOUT AND ORDERING ---
+        preferred_order = sorted(unique_rows) + [" TOTAL CPU"]
+        
         fig.update_layout(
-            xaxis_title="Time (Ticks)",
+            xaxis_title="Time (Ticks)", 
             yaxis_title="",
-            showlegend=True,
-            bargap=0.1 # Make bars thicker
+            showlegend=True, 
+            bargap=0.4,
+            yaxis={'categoryorder': 'array', 'categoryarray': preferred_order}
         )
         
-        # Force X-axis to show every single integer tick
-        fig.update_xaxes(type='linear', dtick=1)
-        
-        # Ensure Y-axes across all facets share the same category order
-        fig.update_yaxes(matches=None, showticklabels=True)
+        fig.update_xaxes(type='linear', dtick=1, showgrid=True, gridwidth=1, gridcolor='LightGrey')
+        fig.update_yaxes(autorange="reversed")
         
         st.plotly_chart(fig, use_container_width=True)
         
-        # --- LOG TABLE ---
+        # --- 6. LOGS ---
         st.divider()
-        st.subheader("📋 Step-by-Step Queue Log")
-        
+        st.subheader("📋 Detailed Queue Log")
         queue_df = pd.DataFrame(queue_log)
-        
-        # Reorder columns to ensure Time is first, then CPUs, then Queue
         cols = ["Time"] + [f"CPU {i+1}" for i in range(num_cpus)] + ["Waiting Queue"]
-        # Filter to make sure we only grab columns that actually exist
         final_cols = [c for c in cols if c in queue_df.columns]
-        
-        st.dataframe(
-            queue_df[final_cols], 
-            use_container_width=True,
-            hide_index=True
-        )
+        st.dataframe(queue_df[final_cols], use_container_width=True, hide_index=True)
+
+        # --- 7. BUDGET ---
+        if server_mode in ["Deferrable Server", "Polling Server"]:
+            st.divider()
+            st.subheader("🔋 Server Budget Monitor")
+            fig_budget = px.line(
+                queue_df, x="Time", y="Server Budget", 
+                title=f"{server_mode} Budget (Cap={s_cap})",
+                line_shape="hv", markers=True
+            )
+            t_replenish = 0
+            while t_replenish <= max_time:
+                fig_budget.add_vline(x=t_replenish, line_width=1, line_dash="dash", line_color="green")
+                t_replenish += s_period
+            fig_budget.update_layout(yaxis_range=[-0.5, s_cap + 0.5], showlegend=False, height=300)
+            fig_budget.update_xaxes(type='linear', dtick=1)
+            st.plotly_chart(fig_budget, use_container_width=True)
