@@ -1,0 +1,4 @@
+Type,Name,Cost,Period,Arrival,Deadline
+Periodic,T1_Stable,4,10,0,10
+Periodic,T2_Urgent,3,14,0,5
+Periodic,T3_Background,2,20,0,20

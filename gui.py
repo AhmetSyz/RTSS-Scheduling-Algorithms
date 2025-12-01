@@ -1,143 +1,349 @@
+import os
+import sys
+import glob
+
+# --- BOOTSTRAP FIX FOR TCL/TK ERROR ---
+# This must run BEFORE importing tkinter
+def fix_tcl_tk_path():
+    if sys.platform == "win32":
+        # Find the Python installation directory
+        python_dir = os.path.dirname(sys.executable)
+        
+        # Possible locations for tcl/tk folders in standard Python installs
+        tcl_dir = os.path.join(python_dir, "tcl", "tcl8.6")
+        tk_dir = os.path.join(python_dir, "tcl", "tk8.6")
+        
+        # If not there, check Lib/tcl8.6 (common in some installs)
+        if not os.path.exists(tcl_dir):
+            tcl_dir = os.path.join(python_dir, "Lib", "tcl8.6")
+            tk_dir = os.path.join(python_dir, "Lib", "tk8.6")
+            
+        # If we found them, set the environment variables
+        if os.path.exists(tcl_dir) and os.path.exists(tk_dir):
+            os.environ["TCL_LIBRARY"] = tcl_dir
+            os.environ["TK_LIBRARY"] = tk_dir
+            print(f"Fixed Tcl/Tk paths:\n TCL: {tcl_dir}\n TK:  {tk_dir}")
+        else:
+            # Fallback: Look inside the local library folders if running in venv
+            print("Warning: Could not auto-detect Tcl/Tk paths. Standard lookup will be used.")
+
+fix_tcl_tk_path()
+# --------------------------------------
+
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import ttk, filedialog, messagebox
 import matplotlib.pyplot as plt
-import matplotlib.patches as mpatches
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+from scheduler import run_scheduler, Task
 
-from scheduler import Task,run_scheduler
+# --- MAIN APPLICATION CLASS ---
+class RTOSApp:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("RTOS Scheduler (Desktop Edition)")
+        self.root.geometry("1000x800")
 
-tasks = []
+        # Data Stores
+        self.periodic_tasks = []
+        self.aperiodic_tasks = []
 
-def add_task():
-    try:
-        n = name_entry.get()
-        c = int(cost_entry.get())
-        p = int(period_entry.get())
-        d = int(deadline_entry.get())
+        # Setup UI
+        self.setup_ui()
+
+    def setup_ui(self):
+        # Create Tabs
+        self.notebook = ttk.Notebook(self.root)
+        self.notebook.pack(fill="both", expand=True, padx=10, pady=10)
+
+        # Tab 1: Configuration & Inputs
+        self.tab_config = ttk.Frame(self.notebook)
+        self.notebook.add(self.tab_config, text="Configuration & Tasks")
+        self.setup_config_tab()
+
+        # Tab 2: Results & Chart
+        self.tab_results = ttk.Frame(self.notebook)
+        self.notebook.add(self.tab_results, text="Simulation Results")
+        self.setup_results_tab()
+
+    def setup_config_tab(self):
+        # --- LEFT PANEL: SETTINGS ---
+        left_frame = ttk.LabelFrame(self.tab_config, text="System Settings")
+        left_frame.pack(side="left", fill="y", padx=5, pady=5)
+
+        # Algorithm
+        ttk.Label(left_frame, text="Algorithm:").pack(anchor="w", padx=5)
+        self.algo_var = tk.StringVar(value="Rate Monotonic")
+        algo_combo = ttk.Combobox(left_frame, textvariable=self.algo_var, state="readonly")
+        algo_combo['values'] = ("Rate Monotonic", "Deadline Monotonic", "EDF", "Least Laxity First")
+        algo_combo.pack(fill="x", padx=5, pady=5)
+
+        # CPUs
+        ttk.Label(left_frame, text="CPUs:").pack(anchor="w", padx=5)
+        self.cpu_var = tk.IntVar(value=1)
+        ttk.Spinbox(left_frame, from_=1, to=4, textvariable=self.cpu_var).pack(fill="x", padx=5, pady=5)
+
+        # Server Settings
+        ttk.Separator(left_frame, orient="horizontal").pack(fill="x", pady=10)
+        ttk.Label(left_frame, text="Server Mode:").pack(anchor="w", padx=5)
+        self.server_var = tk.StringVar(value="None")
+        server_combo = ttk.Combobox(left_frame, textvariable=self.server_var, state="readonly")
+        server_combo['values'] = ("None", "Background", "Deferrable Server", "Polling Server")
+        server_combo.pack(fill="x", padx=5, pady=5)
+        server_combo.bind("<<ComboboxSelected>>", self.toggle_server_inputs)
+
+        self.server_frame = ttk.Frame(left_frame)
+        self.server_frame.pack(fill="x", padx=5, pady=5)
         
-        # Create Task and add to list
-        new_task = Task(n, 0, c, p, d)
-        tasks.append(new_task)
+        ttk.Label(self.server_frame, text="Budget (Cs):").grid(row=0, column=0)
+        self.budget_var = tk.IntVar(value=2)
+        ttk.Entry(self.server_frame, textvariable=self.budget_var, width=5).grid(row=0, column=1)
         
-        # Update listbox
-        task_listbox.insert(tk.END, f"{n}: Cost={c}, Period={p}, Deadline={d}")
+        ttk.Label(self.server_frame, text="Period (Ts):").grid(row=1, column=0)
+        self.period_var = tk.IntVar(value=5)
+        ttk.Entry(self.server_frame, textvariable=self.period_var, width=5).grid(row=1, column=1)
         
-        # Clear inputs
-        name_entry.delete(0, tk.END)
-    except ValueError:
-        messagebox.showerror("Input Error", "Please enter valid numbers for Cost/Period/Deadline")
+        self.toggle_server_inputs() # Hide initially if None
 
-def clear_tasks():
-    tasks.clear()
-    task_listbox.delete(0, tk.END)
+        # --- RIGHT PANEL: TASKS ---
+        right_frame = ttk.Frame(self.tab_config)
+        right_frame.pack(side="right", fill="both", expand=True, padx=5, pady=5)
 
-def run_simulation():
-    if not tasks:
-        messagebox.showwarning("No Tasks", "Please add at least one task.")
-        return
+        # File Operations
+        file_frame = ttk.LabelFrame(right_frame, text="File Operations")
+        file_frame.pack(fill="x", padx=5, pady=5)
+        ttk.Button(file_frame, text="📂 Load Task File (.txt)", command=self.load_file).pack(side="left", padx=5, pady=5)
+        ttk.Button(file_frame, text="❌ Clear All Tasks", command=self.clear_tasks).pack(side="right", padx=5, pady=5)
 
-    algo = algo_combo.get()
-    
-    # 1. Run the Scheduler Logic
-    timeline = run_scheduler(tasks, algo)
-    
-    # 2. Draw with Matplotlib
-    draw_gantt_chart(timeline)
+        # Task Lists
+        list_frame = ttk.Frame(right_frame)
+        list_frame.pack(fill="both", expand=True)
 
-def draw_gantt_chart(timeline):
-    """
-    Draws a Gantt chart using Matplotlib in a new popup window
-    """
-    if not timeline:
-        messagebox.showinfo("Result", "No timeline generated.")
-        return
+        # Periodic List
+        p_frame = ttk.LabelFrame(list_frame, text="Periodic Tasks")
+        p_frame.pack(side="left", fill="both", expand=True, padx=5)
+        self.p_listbox = tk.Listbox(p_frame)
+        self.p_listbox.pack(fill="both", expand=True, padx=5, pady=5)
 
-    fig, gnt = plt.subplots(figsize=(10, 5))
-    
-    # Setup X and Y axes
-    simulation_time = timeline[-1]['Finish'] # Get last finish time
-    gnt.set_xlim(0, simulation_time)
-    gnt.set_xlabel('Time')
-    gnt.set_ylabel('Tasks')
-    
-    # Set Y-ticks to show Task Names
-    # Get unique task names from the timeline
-    task_names = sorted(list(set(item['Task'] for item in timeline if item['Task'] != 'System')))
-    yticks = [15 + 10 * i for i in range(len(task_names))]
-    gnt.set_yticks(yticks)
-    gnt.set_yticklabels(task_names)
-    gnt.grid(True)
-    
-    # Colors for different statuses
-    colors = {'Running': 'tab:blue', 'Idle': 'tab:gray', 'Missed': 'tab:red'}
+        # Aperiodic List
+        a_frame = ttk.LabelFrame(list_frame, text="Aperiodic Tasks")
+        a_frame.pack(side="right", fill="both", expand=True, padx=5)
+        self.a_listbox = tk.Listbox(a_frame)
+        self.a_listbox.pack(fill="both", expand=True, padx=5, pady=5)
 
-    # Draw the bars
-    for item in timeline:
-        task_name = item['Task']
-        start = item['Start']
-        duration = item['Finish'] - item['Start']
-        status = item['Status']
+        # Manual Add Frame
+        add_frame = ttk.LabelFrame(right_frame, text="Manual Add")
+        add_frame.pack(fill="x", padx=5, pady=5)
         
-        if task_name == 'System': continue # Skip the dummy system block if present
+        ttk.Label(add_frame, text="Format: Name Cost Period [Deadline] [Arrival]").pack(anchor="w")
+        self.manual_entry = ttk.Entry(add_frame)
+        self.manual_entry.pack(fill="x", padx=5, pady=2)
+        ttk.Button(add_frame, text="Add Periodic", command=lambda: self.add_manual("P")).pack(side="left", padx=5, pady=5)
+        ttk.Button(add_frame, text="Add Aperiodic", command=lambda: self.add_manual("A")).pack(side="left", padx=5, pady=5)
 
-        # Calculate Y position based on task name index
-        y_pos = 10 + 10 * task_names.index(task_name)
-        
-        gnt.broken_barh([(start, duration)], (y_pos, 9), facecolors=colors.get(status, 'blue'))
-        
-        # Add text label inside the bar
-        gnt.text(start + duration/2, y_pos + 4.5, str(duration), color='white', ha='center', va='center')
+    def setup_results_tab(self):
+        # Controls at top
+        top_frame = ttk.Frame(self.tab_results)
+        top_frame.pack(fill="x", padx=5, pady=5)
+        ttk.Button(top_frame, text="🚀 RUN SIMULATION", command=self.run_simulation).pack(fill="x", pady=5)
 
-    plt.title(f"Scheduling Schedule")
-    plt.show()
+        # Matplotlib Figure
+        self.fig, (self.ax_gantt, self.ax_budget) = plt.subplots(2, 1, figsize=(8, 6), gridspec_kw={'height_ratios': [3, 1]})
+        self.canvas = FigureCanvasTkAgg(self.fig, master=self.tab_results)
+        self.canvas.get_tk_widget().pack(fill="both", expand=True, padx=5, pady=5)
 
-# --- MAIN WINDOW SETUP ---
-root = tk.Tk()
-root.title("RTOS Scheduler (Tkinter)")
-root.geometry("400x500")
+        # Log Area
+        self.log_text = tk.Text(self.tab_results, height=8)
+        self.log_text.pack(fill="x", padx=5, pady=5)
 
-# Input Frame
-input_frame = ttk.LabelFrame(root, text="New Task")
-input_frame.pack(padx=10, pady=10, fill="x")
+    # --- LOGIC FUNCTIONS ---
 
-ttk.Label(input_frame, text="Name:").grid(row=0, column=0)
-name_entry = ttk.Entry(input_frame, width=10)
-name_entry.grid(row=0, column=1)
+    def toggle_server_inputs(self, event=None):
+        if self.server_var.get() in ["Deferrable Server", "Polling Server"]:
+            for child in self.server_frame.winfo_children():
+                child.configure(state='normal')
+        else:
+            for child in self.server_frame.winfo_children():
+                child.configure(state='disabled')
 
-ttk.Label(input_frame, text="Cost (C):").grid(row=0, column=2)
-cost_entry = ttk.Entry(input_frame, width=5)
-cost_entry.grid(row=0, column=3)
+    def load_file(self):
+        filepath = filedialog.askopenfilename(filetypes=[("Text Files", "*.txt")])
+        if not filepath: return
 
-ttk.Label(input_frame, text="Period (T):").grid(row=1, column=0)
-period_entry = ttk.Entry(input_frame, width=5)
-period_entry.grid(row=1, column=1)
+        try:
+            self.clear_tasks()
+            with open(filepath, 'r') as f:
+                p_count = 1
+                a_count = 1
+                for line in f:
+                    line = line.strip()
+                    if not line or line.startswith("#"): continue
+                    
+                    parts = line.split()
+                    code = parts[0].upper()
+                    
+                    try:
+                        vals = [int(x) for x in parts[1:]]
+                        
+                        if code.startswith("P"):
+                            if len(vals) == 4: r, c, p, d = vals
+                            elif len(vals) == 3: r, c, p = vals; d = p
+                            elif len(vals) == 2: c, p = vals; r = 0; d = p
+                            else: continue
+                            
+                            t = Task(f"T{p_count}", "Periodic", c, p, d, r)
+                            self.periodic_tasks.append(t)
+                            self.p_listbox.insert(tk.END, f"{t.name}: C={c} T={p} D={d} R={r}")
+                            p_count += 1
+                            
+                        elif code.startswith("A"):
+                            if len(vals) == 2: r, c = vals
+                            else: continue
+                            
+                            t = Task(f"J{a_count}", "Aperiodic", c, 0, 0, r)
+                            self.aperiodic_tasks.append(t)
+                            self.a_listbox.insert(tk.END, f"{t.name}: Arrival={r} Cost={c}")
+                            a_count += 1
+                            
+                    except ValueError:
+                        continue
+            
+            messagebox.showinfo("Success", f"Loaded {len(self.periodic_tasks)} Periodic and {len(self.aperiodic_tasks)} Aperiodic tasks.")
+            
+        except Exception as e:
+            messagebox.showerror("Error", str(e))
 
-ttk.Label(input_frame, text="Deadline (D):").grid(row=1, column=2)
-deadline_entry = ttk.Entry(input_frame, width=5)
-deadline_entry.grid(row=1, column=3)
+    def clear_tasks(self):
+        self.periodic_tasks = []
+        self.aperiodic_tasks = []
+        self.p_listbox.delete(0, tk.END)
+        self.a_listbox.delete(0, tk.END)
 
-add_btn = ttk.Button(input_frame, text="Add Task", command=add_task)
-add_btn.grid(row=2, column=0, columnspan=4, pady=5)
+    def add_manual(self, type_char):
+        try:
+            parts = self.manual_entry.get().split()
+            if not parts: return
+            
+            name = parts[0]
+            vals = [int(x) for x in parts[1:]]
+            
+            if type_char == "P":
+                c = vals[0]
+                p = vals[1]
+                d = vals[2] if len(vals) > 2 else p
+                r = vals[3] if len(vals) > 3 else 0
+                t = Task(name, "Periodic", c, p, d, r)
+                self.periodic_tasks.append(t)
+                self.p_listbox.insert(tk.END, f"{t.name}: C={c} T={p} D={d} R={r}")
+            else:
+                c = vals[0]
+                r = vals[1] if len(vals) > 1 else 0
+                t = Task(name, "Aperiodic", c, 0, 0, r)
+                self.aperiodic_tasks.append(t)
+                self.a_listbox.insert(tk.END, f"{t.name}: Arrival={r} Cost={c}")
+                
+            self.manual_entry.delete(0, tk.END)
+        except Exception:
+            messagebox.showerror("Error", "Invalid Format. Use: Name Cost Period [Deadline] [Arrival]")
 
-# Task List
-list_frame = ttk.LabelFrame(root, text="Current Tasks")
-list_frame.pack(padx=10, pady=5, fill="both", expand=True)
+    def run_simulation(self):
+        if not self.periodic_tasks and not self.aperiodic_tasks:
+            messagebox.showwarning("Warning", "No tasks defined!")
+            return
 
-task_listbox = tk.Listbox(list_frame, height=10)
-task_listbox.pack(fill="both", expand=True, padx=5, pady=5)
+        try:
+            results, queue_log = run_scheduler(
+                self.periodic_tasks,
+                self.aperiodic_tasks,
+                self.algo_var.get(),
+                self.cpu_var.get(),
+                self.server_var.get(),
+                self.budget_var.get(),
+                self.period_var.get()
+            )
+            
+            self.notebook.select(self.tab_results)
+            
+            self.ax_gantt.clear()
+            self.ax_budget.clear()
+            
+            colors = {'Running': 'tab:blue', 'Server Exec': 'tab:green', 'Background': 'tab:purple', 'Missed': 'red', 'Idle': 'lightgrey'}
+            
+            task_names = []
+            for item in results:
+                if item['Task'] not in task_names and item['Task'] != 'IDLE':
+                    task_names.append(item['Task'])
+            task_names.sort()
+            
+            y_map = {name: i for i, name in enumerate(task_names)}
+            y_map['IDLE'] = -1 
+            
+            for item in results:
+                t_name = item['Task']
+                if t_name == 'IDLE': continue
+                
+                start = item['Start']
+                dur = item['Finish'] - start
+                status = item['Status']
+                
+                self.ax_gantt.barh(y_map[t_name], dur, left=start, height=0.6, 
+                                   color=colors.get(status, 'gray'), edgecolor='black')
+                
+                self.ax_gantt.text(start + dur/2, y_map[t_name], item['CPU'], 
+                                   ha='center', va='center', color='white', fontsize=8)
 
-clear_btn = ttk.Button(list_frame, text="Clear All", command=clear_tasks)
-clear_btn.pack(pady=5)
+            max_time = results[-1]['Finish'] if results else 20
+            
+            for t in self.periodic_tasks:
+                if t.name in y_map:
+                    arr = t.arrival_time
+                    while arr <= max_time:
+                        self.ax_gantt.plot(arr, y_map[t.name] + 0.4, marker='v', color='black', markersize=8)
+                        arr += t.period
+                        
+            for t in self.aperiodic_tasks:
+                if t.name in y_map and t.arrival_time <= max_time:
+                    self.ax_gantt.plot(t.arrival_time, y_map[t.name] + 0.4, marker='v', color='red', markersize=8)
 
-# Control Frame
-control_frame = ttk.Frame(root)
-control_frame.pack(fill="x", padx=10, pady=10)
+            self.ax_gantt.set_yticks(range(len(task_names)))
+            self.ax_gantt.set_yticklabels(task_names)
+            self.ax_gantt.set_xlabel("Time")
+            self.ax_gantt.set_title("Task Execution Gantt Chart")
+            self.ax_gantt.grid(True, axis='x', linestyle='--', alpha=0.7)
+            self.ax_gantt.set_xlim(0, max_time)
 
-ttk.Label(control_frame, text="Algorithm:").pack(side="left")
-algo_combo = ttk.Combobox(control_frame, values=["Rate Monotonic", "EDF"])
-algo_combo.current(0)
-algo_combo.pack(side="left", padx=5)
+            if self.server_var.get() in ["Deferrable Server", "Polling Server"]:
+                times = [log['Time'] for log in queue_log]
+                budgets = [log['Server Budget'] for log in queue_log]
+                
+                self.ax_budget.step(times, budgets, where='post', color='green')
+                self.ax_budget.set_ylabel("Budget")
+                self.ax_budget.set_ylim(-0.5, self.budget_var.get() + 0.5)
+                self.ax_budget.grid(True)
+                self.ax_budget.set_title("Server Budget Monitor")
+            else:
+                self.ax_budget.text(0.5, 0.5, "No Server Active", ha='center', va='center')
 
-run_btn = ttk.Button(control_frame, text="RUN SIMULATION", command=run_simulation)
-run_btn.pack(side="right")
+            self.fig.tight_layout()
+            self.canvas.draw()
 
-root.mainloop()
+            self.log_text.delete(1.0, tk.END)
+            header = f"{'Time':<5} | {'Running':<20} | {'Budget':<8} | {'Queue'}\n"
+            self.log_text.insert(tk.END, header)
+            self.log_text.insert(tk.END, "-"*60 + "\n")
+            
+            for log in queue_log:
+                run_str = ""
+                for k, v in log.items():
+                    if k.startswith("CPU"): run_str += f"{v} "
+                
+                line = f"{log['Time']:<5} | {run_str:<20} | {log.get('Server Budget', '-'):<8} | {log['Waiting Queue']}\n"
+                self.log_text.insert(tk.END, line)
+
+        except Exception as e:
+            messagebox.showerror("Simulation Error", str(e))
+            raise e
+
+if __name__ == "__main__":
+    root = tk.Tk()
+    app = RTOSApp(root)
+    root.mainloop()

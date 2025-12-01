@@ -1,0 +1,4 @@
+Type,Name,Cost,Period,Arrival,Deadline
+Periodic,T1,2,4,0,4
+Periodic,T2,3,6,0,6
+Periodic,T3,2,8,0,8

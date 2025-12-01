@@ -25,7 +25,7 @@ with st.sidebar:
     
     st.divider()
     st.header("2. Server Config")
-    server_mode = st.selectbox("Aperiodic Handling", ["None", "Background", "Deferrable Server"])
+    server_mode = st.selectbox("Aperiodic Handling", ["None", "Background", "Deferrable Server"," Polling Server"])
     
     s_cap = 0
     s_period = 0
@@ -33,7 +33,81 @@ with st.sidebar:
         col1, col2 = st.columns(2)
         s_cap = col1.number_input("Server Budget (Cs)", 1, 10, 2)
         s_period = col2.number_input("Server Period (Ts)", 2, 20, 5)
+# ... (Keep your existing System and Server Config code above this) ...
 
+    st.divider()
+    st.header("3. Data Import")
+    
+    # 1. Template Download (Helps the user know the format)
+    # We create a sample CSV structure for the user to download
+    sample_csv = """Type,Name,Cost,Period,Arrival,Deadline
+                    Periodic,T1,2,10,0,10
+                    Periodic,T2,3,15,0,15
+                    Aperiodic,J1,1,0,4,0"""
+                        
+    st.download_button(
+        label="📥 Download CSV Template",
+        data=sample_csv,
+        file_name="task_template.csv",
+        mime="text/csv"
+    )
+
+    # 2. File Uploader
+    uploaded_file = st.file_uploader("Upload Task CSV", type=["csv", "txt"])
+
+    if uploaded_file is not None:
+        try:
+            # Read the file
+            df_upload = pd.read_csv(uploaded_file)
+            
+            # Normalize column names (strip whitespace and lower case for safety)
+            df_upload.columns = df_upload.columns.str.strip().str.lower()
+            
+            # Required columns
+            required_cols = {'type', 'name', 'cost', 'period', 'arrival', 'deadline'}
+            
+            if not required_cols.issubset(df_upload.columns):
+                st.error(f"CSV missing columns. Required: {required_cols}")
+            else:
+                if st.button("🚨 Overwrite & Load Tasks"):
+                    # Clear existing lists
+                    st.session_state.periodic_list = []
+                    st.session_state.aperiodic_list = []
+                    
+                    # Iterate and Add
+                    count_p = 0
+                    count_a = 0
+                    
+                    for _, row in df_upload.iterrows():
+                        # Handle missing values safely using fillna logic or 0 defaults
+                        r_type = str(row['type']).strip().title() # Ensures "periodic" becomes "Periodic"
+                        r_name = str(row['name'])
+                        r_cost = int(row['cost'])
+                        r_period = int(row['period']) if not pd.isna(row['period']) else 0
+                        r_arrival = int(row['arrival']) if not pd.isna(row['arrival']) else 0
+                        r_deadline = int(row['deadline']) if not pd.isna(row['deadline']) else 0
+                        
+                        new_task = Task(
+                            name=r_name,
+                            task_type=r_type,
+                            cost=r_cost,
+                            period=r_period,
+                            deadline=r_deadline,
+                            arrival=r_arrival
+                        )
+                        
+                        if r_type == "Periodic":
+                            st.session_state.periodic_list.append(new_task)
+                            count_p += 1
+                        else:
+                            st.session_state.aperiodic_list.append(new_task)
+                            count_a += 1
+                            
+                    st.success(f"Loaded {count_p} Periodic and {count_a} Aperiodic tasks!")
+                    st.rerun() # Refresh page to show data in tables
+                    
+        except Exception as e:
+            st.error(f"Error parsing file: {e}")
 # --- MAIN INPUT AREA (TABS) ---
 tab1, tab2 = st.tabs(["🔄 Periodic Tasks", "⚡ Aperiodic Tasks"])
 

@@ -1,0 +1,3 @@
+Type,Name,Cost,Period,Arrival,Deadline
+Periodic,Task_A,4,10,0,10
+Periodic,Task_B,4,10,0,10
