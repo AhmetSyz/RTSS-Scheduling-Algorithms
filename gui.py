@@ -149,7 +149,7 @@ class RTOSApp:
         # File Operations
         file_frame = ttk.LabelFrame(right_frame, text="File Operations")
         file_frame.pack(fill="x", padx=5, pady=5)
-        ttk.Button(file_frame, text="📂 Load Task File (.txt)", command=self.load_file).pack(side="left", padx=5, pady=5)
+        ttk.Button(file_frame, text="📂 Load Task File (.csv,.txt)", command=self.load_file).pack(side="left", padx=5, pady=5)
         ttk.Button(file_frame, text="❌ Clear All Tasks", command=self.clear_tasks).pack(side="right", padx=5, pady=5)
 
         # Task Lists
@@ -215,7 +215,7 @@ class RTOSApp:
         ttk.Button(top_frame, text="🚀 RUN SIMULATION", command=self.run_simulation).pack(fill="x", pady=5)
 
         # Matplotlib Figure
-        self.fig, (self.ax_gantt, self.ax_budget) = plt.subplots(2, 1, figsize=(8, 6), gridspec_kw={'height_ratios': [3, 1]})
+        self.fig, (self.ax_gantt, self.ax_budget) = plt.subplots(2, 1, figsize=(8, 6), sharex=True, gridspec_kw={'height_ratios': [3, 1]})
         self.canvas = FigureCanvasTkAgg(self.fig, master=self.tab_results)
         self.canvas.get_tk_widget().pack(fill="both", expand=True, padx=5, pady=5)
 
@@ -234,7 +234,7 @@ class RTOSApp:
                 child.configure(state='disabled')
 
     def load_file(self):
-        filepath = filedialog.askopenfilename(filetypes=[("Task Files", "*.txt *.csv"), ("Text Files", "*.txt"), ("CSV Files", "*.csv")])
+        filepath = filedialog.askopenfilename(filetypes=[("All Task Files", "*.txt;*.csv"), ("Text Files", "*.txt"), ("CSV Files", "*.csv"), ("All Files", "*.*")])
         if not filepath: return
 
         try:
@@ -257,7 +257,11 @@ class RTOSApp:
                 line = line.strip()
                 if not line or line.startswith("#"): continue
                 
+                # Handle comma-separated values in TXT
+                line = line.replace(',', ' ')
                 parts = line.split()
+                if not parts: continue
+
                 code = parts[0].upper()
                 
                 try:
@@ -413,58 +417,72 @@ class RTOSApp:
             
             colors = {'Running': 'tab:blue', 'Server Exec': 'tab:green', 'Background': 'tab:purple', 'Missed': 'red', 'Idle': 'lightgrey'}
             
-            task_names = []
+            # Collect unique CPUs and create y-map based on CPUs
+            cpu_names = []
             for item in results:
-                if item['Task'] not in task_names and item['Task'] != 'IDLE':
-                    task_names.append(item['Task'])
-            task_names.sort()
+                if item['CPU'] not in cpu_names:
+                    cpu_names.append(item['CPU'])
+            cpu_names.sort()
             
-            y_map = {name: i for i, name in enumerate(task_names)}
-            y_map['IDLE'] = -1 
+            y_map = {name: i for i, name in enumerate(cpu_names)}
             
             for item in results:
                 t_name = item['Task']
+                cpu = item['CPU']
                 if t_name == 'IDLE': continue
                 
                 start = item['Start']
                 dur = item['Finish'] - start
                 status = item['Status']
                 
-                self.ax_gantt.barh(y_map[t_name], dur, left=start, height=0.6, 
+                self.ax_gantt.barh(y_map[cpu], dur, left=start, height=0.6, 
                                    color=colors.get(status, 'gray'), edgecolor='black')
                 
-                self.ax_gantt.text(start + dur/2, y_map[t_name], item['CPU'], 
-                                   ha='center', va='center', color='white', fontsize=8)
+                # Show Task name inside the bar
+                self.ax_gantt.text(start + dur/2, y_map[cpu], t_name, 
+                                   ha='center', va='center', color='white', fontsize=7)
 
             max_time = results[-1]['Finish'] if results else 20
             
+            # Draw arrival markers for periodic tasks (at bottom of chart)
             for t in self.periodic_tasks:
-                if t.name in y_map:
-                    arr = t.arrival_time
-                    while arr <= max_time:
-                        self.ax_gantt.plot(arr, y_map[t.name] + 0.4, marker='v', color='black', markersize=8)
-                        arr += t.period
+                arr = t.arrival_time
+                while arr <= max_time:
+                    self.ax_gantt.axvline(x=arr, color='black', linestyle=':', alpha=0.3)
+                    arr += t.period
                         
             for t in self.aperiodic_tasks:
-                if t.name in y_map and t.arrival_time <= max_time:
-                    self.ax_gantt.plot(t.arrival_time, y_map[t.name] + 0.4, marker='v', color='red', markersize=8)
+                if t.arrival_time <= max_time:
+                    self.ax_gantt.axvline(x=t.arrival_time, color='red', linestyle=':', alpha=0.5)
 
-            self.ax_gantt.set_yticks(range(len(task_names)))
-            self.ax_gantt.set_yticklabels(task_names)
+            self.ax_gantt.set_yticks(range(len(cpu_names)))
+            self.ax_gantt.set_yticklabels(cpu_names)
             self.ax_gantt.set_xlabel("Time")
-            self.ax_gantt.set_title("Task Execution Gantt Chart")
+            self.ax_gantt.set_ylabel("CPU")
+            self.ax_gantt.set_title("Task Execution Gantt Chart (by CPU)")
             self.ax_gantt.grid(True, axis='x', linestyle='--', alpha=0.7)
             self.ax_gantt.set_xlim(0, max_time)
 
             if self.server_var.get() in ["Deferrable Server", "Polling Server"]:
-                times = [log['Time'] for log in queue_log]
-                budgets = [log['Server Budget'] for log in queue_log]
+                # Construct continuous timeline for budget
+                plot_times = []
+                plot_budgets = []
                 
-                self.ax_budget.step(times, budgets, where='post', color='green')
+                for log in queue_log:
+                    t = log['Time']
+                    start_b = log.get('Start Budget', log['Server Budget']) # Fallback if key missing
+                    end_b = log['Server Budget']
+                    
+                    # Add start and end points for this tick
+                    plot_times.extend([t, t + 1])
+                    plot_budgets.extend([start_b, end_b])
+                
+                self.ax_budget.plot(plot_times, plot_budgets, color='green')
                 self.ax_budget.set_ylabel("Budget")
                 self.ax_budget.set_ylim(-0.5, self.budget_var.get() + 0.5)
                 self.ax_budget.grid(True)
                 self.ax_budget.set_title("Server Budget Monitor")
+                self.ax_budget.set_xlim(0, max_time)
             else:
                 self.ax_budget.text(0.5, 0.5, "No Server Active", ha='center', va='center')
 

@@ -78,6 +78,9 @@ def run_scheduler(periodic_tasks, aperiodic_tasks, algorithm, num_cpus, server_t
                 server_budget = server_capacity
                 server_deadline = t + server_period
 
+        # Capture budget at start of tick
+        start_budget = server_budget
+
         # Identify Ready Aperiodic Tasks
         ready_aperiodic = [at for at in aperiodic_queue if at.arrival_time <= t and at.remaining_time > 0]
 
@@ -190,6 +193,7 @@ def run_scheduler(periodic_tasks, aperiodic_tasks, algorithm, num_cpus, server_t
         
         log_entry["Waiting Queue"] = str(waiting_list) if waiting_list else "Empty"
         log_entry["Server Budget"] = server_budget
+        log_entry["Start Budget"] = start_budget
         queue_log.append(log_entry)
 
     return timeline, queue_log
