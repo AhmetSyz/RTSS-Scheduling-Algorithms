@@ -11,35 +11,44 @@ def fix_tcl_tk_path():
     if sys.platform != "win32":
         return
 
-    # 1) If running from a PyInstaller bundle, prefer the extracted _MEIPASS path
+    # Check if we are running as a PyInstaller bundle
+    is_frozen = getattr(sys, 'frozen', False)
     meipass = getattr(sys, '_MEIPASS', None)
+
     candidates = []
-    if meipass:
+    
+    if is_frozen and meipass:
+        # Only look in _MEIPASS if frozen. Do NOT look at local system paths.
+        # PyInstaller usually puts them in tcl/tcl8.6 or just tcl8.6
         candidates.append(os.path.join(meipass, 'tcl', 'tcl8.6'))
         candidates.append(os.path.join(meipass, 'tcl', 'tk8.6'))
+        candidates.append(os.path.join(meipass, 'tcl8.6'))
+        candidates.append(os.path.join(meipass, 'tk8.6'))
+        candidates.append(os.path.join(meipass, 'lib', 'tcl8.6'))
+        candidates.append(os.path.join(meipass, 'lib', 'tk8.6'))
+    else:
+        # Normal development mode
+        python_dir = os.path.dirname(sys.executable)
+        candidates.append(os.path.join(python_dir, 'tcl', 'tcl8.6'))
+        candidates.append(os.path.join(python_dir, 'tcl', 'tk8.6'))
+        candidates.append(os.path.join(python_dir, 'Lib', 'tcl8.6'))
+        candidates.append(os.path.join(python_dir, 'Lib', 'tk8.6'))
 
-    # 2) Check the Python installation directory used by this interpreter
-    python_dir = os.path.dirname(sys.executable)
-    candidates.append(os.path.join(python_dir, 'tcl', 'tcl8.6'))
-    candidates.append(os.path.join(python_dir, 'tcl', 'tk8.6'))
-    candidates.append(os.path.join(python_dir, 'Lib', 'tcl8.6'))
-    candidates.append(os.path.join(python_dir, 'Lib', 'tk8.6'))
-
-    # 3) Common fallback locations (user-local Python installs)
-    local_python = os.path.join(os.environ.get('LOCALAPPDATA', ''), 'Programs', 'Python')
-    if os.path.exists(local_python):
-        for root, dirs, _ in os.walk(local_python):
-            if 'tcl' in dirs:
-                candidates.append(os.path.join(root, 'tcl', 'tcl8.6'))
-                candidates.append(os.path.join(root, 'tcl', 'tk8.6'))
+        # 3) Common fallback locations (user-local Python installs)
+        local_python = os.path.join(os.environ.get('LOCALAPPDATA', ''), 'Programs', 'Python')
+        if os.path.exists(local_python):
+            for root, dirs, _ in os.walk(local_python):
+                if 'tcl' in dirs:
+                    candidates.append(os.path.join(root, 'tcl', 'tcl8.6'))
+                    candidates.append(os.path.join(root, 'tcl', 'tk8.6'))
 
     # Find the first pair that exists and set env vars accordingly
     found_tcl = None
     found_tk = None
     for path in candidates:
-        if path.endswith('tcl8.6') and os.path.exists(path):
+        if 'tcl8.6' in path and os.path.exists(path):
             found_tcl = path
-        if path.endswith('tk8.6') and os.path.exists(path):
+        if 'tk8.6' in path and os.path.exists(path):
             found_tk = path
         if found_tcl and found_tk:
             break
