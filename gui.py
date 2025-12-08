@@ -5,27 +5,56 @@ import glob
 # --- BOOTSTRAP FIX FOR TCL/TK ERROR ---
 # This must run BEFORE importing tkinter
 def fix_tcl_tk_path():
-    if sys.platform == "win32":
-        # Find the Python installation directory
-        python_dir = os.path.dirname(sys.executable)
-        
-        # Possible locations for tcl/tk folders in standard Python installs
-        tcl_dir = os.path.join(python_dir, "tcl", "tcl8.6")
-        tk_dir = os.path.join(python_dir, "tcl", "tk8.6")
-        
-        # If not there, check Lib/tcl8.6 (common in some installs)
-        if not os.path.exists(tcl_dir):
-            tcl_dir = os.path.join(python_dir, "Lib", "tcl8.6")
-            tk_dir = os.path.join(python_dir, "Lib", "tk8.6")
-            
-        # If we found them, set the environment variables
-        if os.path.exists(tcl_dir) and os.path.exists(tk_dir):
-            os.environ["TCL_LIBRARY"] = tcl_dir
-            os.environ["TK_LIBRARY"] = tk_dir
-            print(f"Fixed Tcl/Tk paths:\n TCL: {tcl_dir}\n TK:  {tk_dir}")
-        else:
-            # Fallback: Look inside the local library folders if running in venv
-            print("Warning: Could not auto-detect Tcl/Tk paths. Standard lookup will be used.")
+    # This function tries multiple heuristics to set TCL/TK env vars so
+    # Tkinter can find its runtime files both when running normally and
+    # when bundled by PyInstaller (extracted to sys._MEIPASS).
+    if sys.platform != "win32":
+        return
+
+    # 1) If running from a PyInstaller bundle, prefer the extracted _MEIPASS path
+    meipass = getattr(sys, '_MEIPASS', None)
+    candidates = []
+    if meipass:
+        candidates.append(os.path.join(meipass, 'tcl', 'tcl8.6'))
+        candidates.append(os.path.join(meipass, 'tcl', 'tk8.6'))
+
+    # 2) Check the Python installation directory used by this interpreter
+    python_dir = os.path.dirname(sys.executable)
+    candidates.append(os.path.join(python_dir, 'tcl', 'tcl8.6'))
+    candidates.append(os.path.join(python_dir, 'tcl', 'tk8.6'))
+    candidates.append(os.path.join(python_dir, 'Lib', 'tcl8.6'))
+    candidates.append(os.path.join(python_dir, 'Lib', 'tk8.6'))
+
+    # 3) Common fallback locations (user-local Python installs)
+    local_python = os.path.join(os.environ.get('LOCALAPPDATA', ''), 'Programs', 'Python')
+    if os.path.exists(local_python):
+        for root, dirs, _ in os.walk(local_python):
+            if 'tcl' in dirs:
+                candidates.append(os.path.join(root, 'tcl', 'tcl8.6'))
+                candidates.append(os.path.join(root, 'tcl', 'tk8.6'))
+
+    # Find the first pair that exists and set env vars accordingly
+    found_tcl = None
+    found_tk = None
+    for path in candidates:
+        if path.endswith('tcl8.6') and os.path.exists(path):
+            found_tcl = path
+        if path.endswith('tk8.6') and os.path.exists(path):
+            found_tk = path
+        if found_tcl and found_tk:
+            break
+
+    if found_tcl and found_tk:
+        os.environ['TCL_LIBRARY'] = found_tcl
+        os.environ['TK_LIBRARY'] = found_tk
+        # Helpful message when running locally
+        try:
+            print(f"Fixed Tcl/Tk paths:\n TCL: {found_tcl}\n TK:  {found_tk}")
+        except Exception:
+            pass
+    else:
+        # Best-effort: fall back to standard behavior and let import fail visibly
+        print('Warning: Could not auto-detect Tcl/Tk paths. Tkinter may fail when bundled.')
 
 fix_tcl_tk_path()
 # --------------------------------------
@@ -131,14 +160,44 @@ class RTOSApp:
         self.a_listbox.pack(fill="both", expand=True, padx=5, pady=5)
 
         # Manual Add Frame
-        add_frame = ttk.LabelFrame(right_frame, text="Manual Add")
+        add_frame = ttk.LabelFrame(right_frame, text="Manual Add Task")
         add_frame.pack(fill="x", padx=5, pady=5)
         
-        ttk.Label(add_frame, text="Format: Name Cost Period [Deadline] [Arrival]").pack(anchor="w")
-        self.manual_entry = ttk.Entry(add_frame)
-        self.manual_entry.pack(fill="x", padx=5, pady=2)
-        ttk.Button(add_frame, text="Add Periodic", command=lambda: self.add_manual("P")).pack(side="left", padx=5, pady=5)
-        ttk.Button(add_frame, text="Add Aperiodic", command=lambda: self.add_manual("A")).pack(side="left", padx=5, pady=5)
+        # Grid Layout for Inputs
+        input_grid = ttk.Frame(add_frame)
+        input_grid.pack(fill="x", padx=5, pady=5)
+        
+        # Row 1: Labels
+        ttk.Label(input_grid, text="Name").grid(row=0, column=0, padx=2)
+        ttk.Label(input_grid, text="Cost (C)").grid(row=0, column=1, padx=2)
+        ttk.Label(input_grid, text="Period (T)").grid(row=0, column=2, padx=2)
+        ttk.Label(input_grid, text="Deadline (D)").grid(row=0, column=3, padx=2)
+        ttk.Label(input_grid, text="Arrival (R)").grid(row=0, column=4, padx=2)
+        
+        # Row 2: Entries
+        self.ent_name = ttk.Entry(input_grid, width=8)
+        self.ent_name.grid(row=1, column=0, padx=2)
+        
+        self.ent_cost = ttk.Entry(input_grid, width=5)
+        self.ent_cost.grid(row=1, column=1, padx=2)
+        
+        self.ent_period = ttk.Entry(input_grid, width=5)
+        self.ent_period.grid(row=1, column=2, padx=2)
+        
+        self.ent_deadline = ttk.Entry(input_grid, width=5)
+        self.ent_deadline.grid(row=1, column=3, padx=2)
+        
+        self.ent_arrival = ttk.Entry(input_grid, width=5)
+        self.ent_arrival.grid(row=1, column=4, padx=2)
+        self.ent_arrival.insert(0, "0") # Default arrival 0
+
+        # Buttons
+        btn_frame = ttk.Frame(add_frame)
+        btn_frame.pack(fill="x", padx=5, pady=5)
+        
+        ttk.Button(btn_frame, text="Add Periodic", command=lambda: self.add_manual("P")).pack(side="left", padx=5)
+        ttk.Button(btn_frame, text="Add Aperiodic", command=lambda: self.add_manual("A")).pack(side="left", padx=5)
+        ttk.Button(btn_frame, text="Clear Inputs", command=self.clear_inputs).pack(side="right", padx=5)
 
     def setup_results_tab(self):
         # Controls at top
@@ -166,51 +225,96 @@ class RTOSApp:
                 child.configure(state='disabled')
 
     def load_file(self):
-        filepath = filedialog.askopenfilename(filetypes=[("Text Files", "*.txt")])
+        filepath = filedialog.askopenfilename(filetypes=[("Task Files", "*.txt *.csv"), ("Text Files", "*.txt"), ("CSV Files", "*.csv")])
         if not filepath: return
 
         try:
             self.clear_tasks()
-            with open(filepath, 'r') as f:
-                p_count = 1
-                a_count = 1
-                for line in f:
-                    line = line.strip()
-                    if not line or line.startswith("#"): continue
-                    
-                    parts = line.split()
-                    code = parts[0].upper()
-                    
-                    try:
-                        vals = [int(x) for x in parts[1:]]
-                        
-                        if code.startswith("P"):
-                            if len(vals) == 4: r, c, p, d = vals
-                            elif len(vals) == 3: r, c, p = vals; d = p
-                            elif len(vals) == 2: c, p = vals; r = 0; d = p
-                            else: continue
-                            
-                            t = Task(f"T{p_count}", "Periodic", c, p, d, r)
-                            self.periodic_tasks.append(t)
-                            self.p_listbox.insert(tk.END, f"{t.name}: C={c} T={p} D={d} R={r}")
-                            p_count += 1
-                            
-                        elif code.startswith("A"):
-                            if len(vals) == 2: r, c = vals
-                            else: continue
-                            
-                            t = Task(f"J{a_count}", "Aperiodic", c, 0, 0, r)
-                            self.aperiodic_tasks.append(t)
-                            self.a_listbox.insert(tk.END, f"{t.name}: Arrival={r} Cost={c}")
-                            a_count += 1
-                            
-                    except ValueError:
-                        continue
+            if filepath.lower().endswith('.csv'):
+                self.load_csv(filepath)
+            else:
+                self.load_txt(filepath)
             
             messagebox.showinfo("Success", f"Loaded {len(self.periodic_tasks)} Periodic and {len(self.aperiodic_tasks)} Aperiodic tasks.")
             
         except Exception as e:
             messagebox.showerror("Error", str(e))
+
+    def load_txt(self, filepath):
+        with open(filepath, 'r') as f:
+            p_count = 1
+            a_count = 1
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#"): continue
+                
+                parts = line.split()
+                code = parts[0].upper()
+                
+                try:
+                    vals = [int(x) for x in parts[1:]]
+                    
+                    if code.startswith("P"):
+                        if len(vals) == 4: r, c, p, d = vals
+                        elif len(vals) == 3: r, c, p = vals; d = p
+                        elif len(vals) == 2: c, p = vals; r = 0; d = p
+                        else: continue
+                        
+                        t = Task(f"T{p_count}", "Periodic", c, p, d, r)
+                        self.periodic_tasks.append(t)
+                        self.p_listbox.insert(tk.END, f"{t.name}: C={c} T={p} D={d} R={r}")
+                        p_count += 1
+                        
+                    elif code.startswith("A"):
+                        if len(vals) == 2: r, c = vals
+                        else: continue
+                        
+                        t = Task(f"J{a_count}", "Aperiodic", c, 0, 0, r)
+                        self.aperiodic_tasks.append(t)
+                        self.a_listbox.insert(tk.END, f"{t.name}: Arrival={r} Cost={c}")
+                        a_count += 1
+                        
+                except ValueError:
+                    continue
+
+    def load_csv(self, filepath):
+        import csv
+        with open(filepath, 'r') as f:
+            reader = csv.DictReader(f)
+            # Normalize headers to lower case strip
+            reader.fieldnames = [name.strip().lower() for name in reader.fieldnames]
+            
+            p_count = 1
+            a_count = 1
+            
+            for row in reader:
+                try:
+                    # Type,Name,Cost,Period,Arrival,Deadline
+                    r_type = row.get('type', '').strip().title()
+                    r_name = row.get('name', '').strip()
+                    r_cost = int(row.get('cost', 0))
+                    r_period = int(row.get('period', 0))
+                    r_arrival = int(row.get('arrival', 0))
+                    r_deadline = int(row.get('deadline', 0))
+                    
+                    if r_type == "Periodic":
+                        if not r_name: r_name = f"T{p_count}"
+                        if r_deadline == 0 and r_period > 0: r_deadline = r_period
+                        
+                        t = Task(r_name, "Periodic", r_cost, r_period, r_deadline, r_arrival)
+                        self.periodic_tasks.append(t)
+                        self.p_listbox.insert(tk.END, f"{t.name}: C={r_cost} T={r_period} D={r_deadline} R={r_arrival}")
+                        p_count += 1
+                        
+                    elif r_type == "Aperiodic":
+                        if not r_name: r_name = f"J{a_count}"
+                        
+                        t = Task(r_name, "Aperiodic", r_cost, 0, 0, r_arrival)
+                        self.aperiodic_tasks.append(t)
+                        self.a_listbox.insert(tk.END, f"{t.name}: Arrival={r_arrival} Cost={r_cost}")
+                        a_count += 1
+                except ValueError:
+                    continue
 
     def clear_tasks(self):
         self.periodic_tasks = []
@@ -218,32 +322,64 @@ class RTOSApp:
         self.p_listbox.delete(0, tk.END)
         self.a_listbox.delete(0, tk.END)
 
+    def clear_inputs(self):
+        self.ent_name.delete(0, tk.END)
+        self.ent_cost.delete(0, tk.END)
+        self.ent_period.delete(0, tk.END)
+        self.ent_deadline.delete(0, tk.END)
+        self.ent_arrival.delete(0, tk.END)
+        self.ent_arrival.insert(0, "0")
+
     def add_manual(self, type_char):
         try:
-            parts = self.manual_entry.get().split()
-            if not parts: return
-            
-            name = parts[0]
-            vals = [int(x) for x in parts[1:]]
-            
+            name = self.ent_name.get().strip()
+            if not name:
+                messagebox.showwarning("Input Error", "Task Name is required.")
+                return
+
+            try:
+                cost = int(self.ent_cost.get())
+            except ValueError:
+                messagebox.showwarning("Input Error", "Cost must be an integer.")
+                return
+
+            arrival = 0
+            if self.ent_arrival.get().strip():
+                try:
+                    arrival = int(self.ent_arrival.get())
+                except ValueError:
+                    messagebox.showwarning("Input Error", "Arrival must be an integer.")
+                    return
+
             if type_char == "P":
-                c = vals[0]
-                p = vals[1]
-                d = vals[2] if len(vals) > 2 else p
-                r = vals[3] if len(vals) > 3 else 0
-                t = Task(name, "Periodic", c, p, d, r)
-                self.periodic_tasks.append(t)
-                self.p_listbox.insert(tk.END, f"{t.name}: C={c} T={p} D={d} R={r}")
-            else:
-                c = vals[0]
-                r = vals[1] if len(vals) > 1 else 0
-                t = Task(name, "Aperiodic", c, 0, 0, r)
-                self.aperiodic_tasks.append(t)
-                self.a_listbox.insert(tk.END, f"{t.name}: Arrival={r} Cost={c}")
+                try:
+                    period = int(self.ent_period.get())
+                except ValueError:
+                    messagebox.showwarning("Input Error", "Period is required for Periodic tasks.")
+                    return
                 
-            self.manual_entry.delete(0, tk.END)
-        except Exception:
-            messagebox.showerror("Error", "Invalid Format. Use: Name Cost Period [Deadline] [Arrival]")
+                deadline = period
+                if self.ent_deadline.get().strip():
+                    try:
+                        deadline = int(self.ent_deadline.get())
+                    except ValueError:
+                        pass # Keep default
+
+                t = Task(name, "Periodic", cost, period, deadline, arrival)
+                self.periodic_tasks.append(t)
+                self.p_listbox.insert(tk.END, f"{t.name}: C={cost} T={period} D={deadline} R={arrival}")
+            
+            else: # Aperiodic
+                t = Task(name, "Aperiodic", cost, 0, 0, arrival)
+                self.aperiodic_tasks.append(t)
+                self.a_listbox.insert(tk.END, f"{t.name}: Arrival={arrival} Cost={cost}")
+                
+            # Clear Name and Cost for next entry, keep others potentially
+            self.ent_name.delete(0, tk.END)
+            self.ent_cost.delete(0, tk.END)
+            
+        except Exception as e:
+            messagebox.showerror("Error", f"An error occurred: {str(e)}")
 
     def run_simulation(self):
         if not self.periodic_tasks and not self.aperiodic_tasks:
